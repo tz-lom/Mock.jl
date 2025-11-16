@@ -19,15 +19,18 @@ Mock.jl provides a simple way to temporarily replace function implementations fo
 ```julia
 using Mock
 
-# Define a mock function with the same signature as the target
-mock_func(x::Real) = 42
+# `sin(::Float16)` is chosen because regular signature of `sin` is quite complicated
 
-with_mocked(SubstituteMock(sin, mock_func)) do
+# Define a mock function with the same signature as the target
+mock_func(x::Float16) = 42 + @original(x) # call original implementation with `@original` macro
+
+with_mocked(sin => mock_func) do
     # Mock is active only here
-    @test sin(0) == 42
+    @test sin(Float16(0)) == 42
+    @test sin(Float16(pi/2)) == 42 + 1
 end
 
-@test sin(0) == 0
+@test sin(Float16(0)) == 0
 ```
 
 ## License

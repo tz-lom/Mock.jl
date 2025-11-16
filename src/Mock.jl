@@ -1,6 +1,6 @@
 module Mock
 
-export with_mocked, SubstituteMock
+export with_mocked, SubstituteMock, @original
 
 abstract type AbstractMock end
 
@@ -10,6 +10,30 @@ function activate(::AbstractMock) end
 
 function deactivate(::AbstractActiveMock) end
 
+const ORIGINALS = IdDict{Any,Any}()
+
+function register_original(method, original::Core.CodeInstance, substitute)
+    ORIGINALS[substitute] = (method => original)
+end
+
+function deregister_original(substitute)
+    delete!(ORIGINALS, substitute)
+end
+
+macro original(args...)
+    esc(
+        # Expr(:macrocall, Symbol("@static"),
+        :(
+            if (call = get($ORIGINALS, var"#self#", missing)) !== missing
+
+                invoke(call[1], call[2], $(args...))
+            else
+                error("@original can be called only from active mock function")
+            end
+        )
+        # )
+    )
+end
 
 function match_signature(left, right, check_kwargs=true)
     return Base.unwrap_unionall(left.sig).types[2:end] == Base.unwrap_unionall(right.sig).types[2:end] &&
@@ -40,6 +64,10 @@ function setup_mock(call, mock)
     pushfirst!(args, Expr(:(.), orig.module, QuoteNode(orig.name)))
     pushfirst!(params, mock)
 
+    # Capture original method instance for @original
+    mi = Base.method_instance(call, Tuple{sig...})
+    precompile(mi) # otherwise cache may not exist yet
+
     setup = Expr(:(=), Expr(:call, args...), Expr(:call, params...))
 
     eval(setup)
@@ -48,6 +76,7 @@ function setup_mock(call, mock)
     @assert overload != orig "Instead of replacing target function did something else, don't rely on following calls"
     @assert match_signature(overload, replacement) "Corrupted signature on replacement"
 
+    register_original(call, mi.cache, mock) # delay registration to make sure all errors are caught before
     return orig, overload
 end
 
@@ -78,12 +107,14 @@ function activate(subst::SubstituteMock)
     ActiveSubstituteMock(original, replaced)
 end
 
+activate(subst::Pair{<:Function,<:Function}) = activate(SubstituteMock(subst.first, subst.second))
+
 function deactivate(subst::ActiveSubstituteMock)
     finalize_mock(subst.original, subst.replaced)
 end
 
 
-function with_mocked(code, mocks::Vararg{AbstractMock})
+function with_mocked(code, mocks...)
     active = AbstractActiveMock[]
 
     function fin()
